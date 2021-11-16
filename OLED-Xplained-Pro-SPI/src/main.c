@@ -41,12 +41,14 @@ void but_callback(void);
 void but1_callback(void);
 void but2_callback(void);
 void pin_toggle(Pio *pio, uint32_t mask);
+static void RTT_init(uint16_t pllPreScale, uint32_t IrqNPulses);
 
 // flags
 
 volatile char flag_tc1 = 1;
 volatile char flag_tc2 = 1;
 volatile char flag_tc3 = 1;
+volatile Bool f_rtt_alarme = false;
 
 // functions implementation
 
@@ -145,6 +147,51 @@ void TC2_Handler(void){
 	if(flag_tc3 == 1) pin_toggle(LED3_PIO, LED3_IDX_MASK);
 }
 
+static void RTT_init(uint16_t pllPreScale, uint32_t IrqNPulses)
+{
+	uint32_t ul_previous_time;
+
+	/* Configure RTT for a 1 second tick interrupt */
+	rtt_sel_source(RTT, false);
+	rtt_init(RTT, pllPreScale);
+	
+	ul_previous_time = rtt_read_timer_value(RTT);
+	while (ul_previous_time == rtt_read_timer_value(RTT));
+	
+	rtt_write_alarm_time(RTT, IrqNPulses+ul_previous_time);
+
+	/* Enable RTT interrupt */
+	NVIC_DisableIRQ(RTT_IRQn);
+	NVIC_ClearPendingIRQ(RTT_IRQn);
+	NVIC_SetPriority(RTT_IRQn, 4);
+	NVIC_EnableIRQ(RTT_IRQn);
+	rtt_enable_interrupt(RTT, RTT_MR_ALMIEN | RTT_MR_RTTINCIEN);
+}
+
+void RTT_Handler(void)
+{
+	uint32_t ul_status;
+
+	/* Get RTT status - ACK */
+	ul_status = rtt_get_status(RTT);
+
+	/* IRQ due to Time has changed */
+	if ((ul_status & RTT_SR_RTTINC) == RTT_SR_RTTINC) {
+		//f_rtt_alarme = false;
+		//pin_toggle(LED_PIO, LED_IDX_MASK);    // BLINK Led
+		
+	}
+
+	/* IRQ due to Alarm */
+	if ((ul_status & RTT_SR_ALMS) == RTT_SR_ALMS) {
+		// pin_toggle(LED_PIO, LED_IDX_MASK);    // BLINK Led
+		f_rtt_alarme = true;                  // flag RTT alarme
+		flag_tc1 = 1 - flag_tc1;
+		flag_tc2 = 1 - flag_tc2;
+		flag_tc3 = 1 - flag_tc3;
+	}
+}
+
 void init(void) {
 	// Enable LEDs
 	pmc_enable_periph_clk(LED1_PIO_ID);
@@ -194,6 +241,8 @@ void init(void) {
 	TC_init(TC0, ID_TC0, 0, 5);
 	TC_init(TC0, ID_TC1, 1, 10);
 	TC_init(TC0, ID_TC2, 2, 1);
+	
+	f_rtt_alarme = true;
 }
 
 int main (void)
@@ -205,6 +254,20 @@ int main (void)
 	WDT->WDT_MR = WDT_MR_WDDIS;
 	
 	while(1) {
+		if (f_rtt_alarme){
+      
+		  /*
+		   * IRQ (interrupção ocorre) apos 4s => 4 pulsos por sengundo (0,25s) -> 16 pulsos são necessários para dar 4s
+		   * tempo[s] = 0,25 * 16 = 4s
+		   */
+		  uint16_t pllPreScale = (int) (((float) 32768) / 4.0);
+		  uint32_t irqRTTvalue = 20;
+      
+		  // reinicia RTT para gerar um novo IRQ
+		  RTT_init(pllPreScale, irqRTTvalue);         
+      
+		  f_rtt_alarme = false;
+		}
 		pmc_sleep(SAM_PM_SMODE_SLEEP_WFI);
 	}
 }
